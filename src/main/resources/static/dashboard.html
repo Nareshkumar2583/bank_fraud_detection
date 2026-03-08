@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fraud Dashboard</title>
+
+    <style>
+        body {
+            font-family: Arial;
+            padding: 20px;
+        }
+
+        button {
+            padding: 8px 15px;
+            margin: 5px;
+            cursor: pointer;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            padding: 10px;
+            border: 1px solid black;
+            text-align: center;
+        }
+
+        .low {
+            background-color: #d4edda;
+        }
+
+        .medium {
+            background-color: #fff3cd;
+        }
+
+        .high {
+            background-color: #f8d7da;
+        }
+    </style>
+</head>
+<body>
+
+<h2>Fraud Alerts Dashboard</h2>
+
+<!-- FILTER BUTTONS -->
+
+<button onclick="loadAll()">All Alerts</button>
+<button onclick="loadHighRisk()">High Risk</button>
+<button onclick="loadByRule('High')">High Value</button>
+<button onclick="loadByRule('Rapid')">Rapid Multiple</button>
+<button onclick="loadByRule('Location')">Location Mismatch</button>
+<button onclick="loadByRule('Suspicious')">Suspicious Merchant</button>
+<button onclick="loadByRule('Odd')">Odd Hours</button>
+
+<table id="alertTable">
+    <thead>
+    <tr>
+        <th>Alert ID</th>
+        <th>Transaction ID</th>
+        <th>Sender</th>
+        <th>Risk Score</th>
+        <th>Reason</th>
+        <th>Date</th>
+    </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<script>
+
+    const baseUrl = "http://localhost:8080/api/alerts";
+
+    function loadAll() {
+        fetch(baseUrl)
+            .then(res => res.json())
+            .then(data => renderTable(data));
+    }
+
+    function loadHighRisk() {
+        fetch(baseUrl + "/high-risk")
+            .then(res => res.json())
+            .then(data => renderTable(data));
+    }
+
+    function loadByRule(rule) {
+        fetch(baseUrl + "/by-rule/" + rule)
+            .then(res => res.json())
+            .then(data => renderTable(data));
+    }
+
+    function renderTable(data) {
+
+        let tableBody = document.querySelector("#alertTable tbody");
+        tableBody.innerHTML = "";
+
+        data.forEach(alert => {
+
+            let row = document.createElement("tr");
+
+            // Risk color coding
+            if (alert.riskScore >= 70) {
+                row.className = "high";
+            } else if (alert.riskScore >= 40) {
+                row.className = "medium";
+            } else {
+                row.className = "low";
+            }
+
+            row.innerHTML = `
+                <td>${alert.alertId}</td>
+                <td>${alert.transactionId}</td>
+                <td>${alert.senderId}</td>
+                <td>${alert.riskScore}</td>
+                <td>${alert.reason}</td>
+                <td>${alert.createdAt}</td>
+            `;
+
+            tableBody.appendChild(row);
+        });
+    }
+
+    // Load all alerts on page load
+    loadAll();
+
+</script>
+
+</body>
+</html>
