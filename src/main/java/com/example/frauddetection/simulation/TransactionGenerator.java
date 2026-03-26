@@ -8,104 +8,127 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.Random;
-import java.util.UUID;
 
 @Component
 public class TransactionGenerator implements CommandLineRunner {
 
     private final DetectionService detectionService;
     private final TransactionRepository repository;
+    private final Random random = new Random();
 
-    public TransactionGenerator(DetectionService detectionService,
-                                TransactionRepository repository) {
+    // ✅ THE FIX: Static allows the Controller to see it.
+    // Volatile ensures Thread-Safety between the Web Thread and Simulation Thread.
+    public static volatile boolean isSimulationRunning = false;
+    
+    // Override scenario mode
+    public static volatile String forceScenario = "RANDOM";
+
+    // Default delay between transactions (2 seconds)
+    private static int frequency = 2000;
+
+    public TransactionGenerator(DetectionService detectionService, TransactionRepository repository) {
         this.detectionService = detectionService;
         this.repository = repository;
     }
 
     @Override
-    public void run(String... args) throws Exception {
+    public void run(String... args) {
+        // Run the simulation in a separate background thread
+        new Thread(() -> {
+            String[] users = {"USER_ALEX", "USER_SAM", "USER_JORDAN", "USER_PRIYA", "USER_LIAM"};
+            String[] locations = {"Mumbai", "Pune", "Hyderabad", "Chennai", "Delhi"};
+            String[] merchants = {"Amazon", "Flipkart", "Netflix", "Steam", "Apple Store"};
+            String[] scenarios = {"NORMAL", "SUSPICIOUS", "FRAUD", "ATTACK"};
 
-        Random random = new Random();
+            while (true) {
+                try {
+                    if (isSimulationRunning) {
+                        // 1. Select a scenario
+                        String scenario;
+                        if ("RANDOM".equalsIgnoreCase(forceScenario)) {
+                            scenario = scenarios[random.nextInt(scenarios.length)];
+                        } else {
+                            scenario = forceScenario;
+                        }
+                        
+                        Transaction txn = generateBasedOnScenario(scenario);
 
-        String[] users = {"USER001", "USER002", "USER003", "USER004"};
+                        // 2. Fill common metadata
+                        txn.setSenderId(users[random.nextInt(users.length)]);
+                        txn.setReceiverId("REC_" + random.nextInt(500));
+                        txn.setMerchantName(merchants[random.nextInt(merchants.length)]);
+                        txn.setTimestamp(LocalDateTime.now());
+                        txn.setDeviceId("DEV_" + random.nextInt(1000));
 
-        String[] locations = {
-                "Hyderabad", "Delhi", "Mumbai",
-                "Chennai", "Bangalore"
-        };
+                        if (txn.getLocation() == null) {
+                            txn.setLocation(locations[random.nextInt(locations.length)]);
+                        }
 
-        String[] normalMerchants = {
-                "Amazon", "Flipkart", "Myntra",
-                "Swiggy", "Zomato", "Paytm",
-                "PhonePe", "GooglePay", "Uber"
-        };
+                        // 3. Set averages for ML calculation
+                        double avg = 2000 + random.nextDouble() * 4000;
+                        txn.setUserAvgAmount(avg);
+                        txn.setAmountVsAvg(txn.getAmount() / avg);
 
-        String[] suspiciousMerchants = {
-                "Unknown", "FakeShop", "FraudStore"
-        };
+                        // 4. Process through Detection Engine (Rules + ML)
+                        detectionService.processTransaction(txn);
 
-        String[] types = {"ONLINE", "UPI", "CARD", "NETBANKING"};
+                        // 5. Save to H2/Database
+                        repository.save(txn);
 
-        while (true) {
+                        System.out.println(">>> [SIM] Created " + scenario + " txn: ₹" + txn.getAmount());
 
-            Transaction txn = new Transaction();
-
-
-            // Sender & Receiver
-            txn.setSenderId(users[random.nextInt(users.length)]);
-            txn.setReceiverId(users[random.nextInt(users.length)]);
-
-            // 💰 Amount Logic (High fraud chance)
-            double amount;
-            if (random.nextInt(10) > 7) {
-                amount = 80000 + random.nextInt(50000); // Fraud
-            } else {
-                amount = 1000 + random.nextInt(10000); // Normal
+                        // Wait for the defined frequency
+                        Thread.sleep(frequency);
+                    } else {
+                        // Idle check every 500ms when simulation is OFF
+                        Thread.sleep(500);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Simulation Loop Error: " + e.getMessage());
+                }
             }
-            txn.setAmount(amount);
+        }).start();
+    }
 
-            // ⏰ Timestamp
-            txn.setTimestamp(LocalDateTime.now().toString());
-
-            // 📍 Location
-            txn.setLocation(locations[random.nextInt(locations.length)]);
-
-            // 📱 Device
-            txn.setDeviceId("DEV" + random.nextInt(1000));
-
-            // 🛒 Merchant (20% suspicious)
-            if (random.nextInt(10) > 7) {
-                txn.setMerchantName(
-                        suspiciousMerchants[random.nextInt(suspiciousMerchants.length)]
-                );
-            } else {
-                txn.setMerchantName(
-                        normalMerchants[random.nextInt(normalMerchants.length)]
-                );
-            }
-
-            // 💳 Transaction Type
-            txn.setTransactionType(types[random.nextInt(types.length)]);
-
-            txn.setStatus("SUCCESS");
-
-            // 🔍 Run Fraud Detection
-            detectionService.calculateRiskScore(txn);
-
-            // 💾 Save to Database
-            repository.save(txn);
-
-            // 🖨 Print Output
-            System.out.println("\nGenerated Transaction:");
-            System.out.println("ID: " + txn.getTransactionId());
-            System.out.println("Sender: " + txn.getSenderId());
-            System.out.println("Merchant: " + txn.getMerchantName());
-            System.out.println("Amount: ₹" + txn.getAmount());
-            System.out.println("Location: " + txn.getLocation());
-            System.out.println("RiskScore: " + txn.getRiskScore());
-            System.out.println("Fraud: " + txn.isFraudFlag());
-
-            Thread.sleep(3000);
+    /**
+     * Logic to create different types of transaction patterns
+     */
+    private Transaction generateBasedOnScenario(String scenario) {
+        Transaction t = new Transaction();
+        switch (scenario) {
+            case "NORMAL":
+                t.setAmount(500 + random.nextDouble() * 2000);
+                t.setTransactionType("PURCHASE");
+                t.setDeviceChange(0);
+                t.setLocationChange(0);
+                t.setTxnFrequency(1);
+                break;
+            case "SUSPICIOUS":
+                t.setAmount(15000 + random.nextDouble() * 10000);
+                t.setTransactionType("TRANSFER");
+                t.setDeviceChange(1);
+                t.setLocationChange(0);
+                t.setTxnFrequency(3);
+                break;
+            case "FRAUD":
+                t.setAmount(80000 + random.nextDouble() * 50000);
+                t.setTransactionType("CASH_OUT");
+                t.setLocation("Unknown");
+                t.setDeviceChange(1);
+                t.setLocationChange(1);
+                t.setTxnFrequency(15);
+                break;
+            case "ATTACK":
+                t.setAmount(10 + random.nextInt(100));
+                t.setTransactionType("UPI_VERIFY");
+                t.setTxnFrequency(50); // High velocity
+                t.setTxnGap(1); // Rapid succession
+                break;
         }
+        return t;
+    }
+
+    public static void setFrequency(int ms) {
+        frequency = ms;
     }
 }

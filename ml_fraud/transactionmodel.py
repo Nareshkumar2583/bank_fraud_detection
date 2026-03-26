@@ -5,134 +5,139 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 
-from sklearn.ensemble import RandomForestClassifier
 from imblearn.over_sampling import SMOTE
-
+from xgboost import XGBClassifier
 
 # =============================
 # LOAD DATASET
 # =============================
-
 df = pd.read_csv("fraud_dataset1.csv")
 
 print("Dataset Shape:", df.shape)
+print("\nColumns:", df.columns.tolist())
 
 print("\nFraud Distribution:")
 print(df["fraud_flag"].value_counts())
 
+# =============================
+# REMOVE DATA LEAKAGE (IMPORTANT)
+# =============================
+df = df.drop(columns=["fraud_probability"], errors="ignore")
 
 # =============================
-# FIX MISSING FEATURES
+# FEATURE ENGINEERING
 # =============================
+if "timestamp" in df.columns:
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["hour"] = df["timestamp"].dt.hour
 
-if "hour" not in df.columns and "timestamp" in df.columns:
-    df["hour"] = pd.to_datetime(df["timestamp"]).dt.hour
+    # REAL txn_gap (important improvement)
+    df["txn_gap"] = df.groupby("sender_id")["timestamp"] \
+                      .diff().dt.total_seconds().fillna(0)
 
-if "merchant_category" not in df.columns and "merchant_name" in df.columns:
+# Merchant category
+if "merchant_name" in df.columns:
     df["merchant_category"] = df["merchant_name"].astype("category").cat.codes
 
-if "txn_gap" not in df.columns:
-    df["txn_gap"] = 0
-
-
 # =============================
-# ENCODE STRING COLUMNS
+# FEATURE LIST
 # =============================
-
-label = LabelEncoder()
-
-for col in df.columns:
-    if df[col].dtype == "object":
-        df[col] = label.fit_transform(df[col].astype(str))
-
-
-# =============================
-# SELECT FEATURES
-# =============================
-
 features = [
-"sender_id",
-"amount",
-"device_id",
-"location",
-"transaction_type",
-"hour",
-"txn_frequency",
-"user_avg_amount",
-"amount_vs_avg",
-"device_change",
-"location_change",
-"merchant_category",
-"txn_gap",
-"rule_score"
+    "sender_id",
+    "amount",
+    "device_id",
+    "location",
+    "transaction_type",
+    "hour",
+    "txn_frequency",
+    "user_avg_amount",
+    "amount_vs_avg",
+    "device_change",
+    "location_change",
+    "merchant_category",
+    "txn_gap",
+    "rule_score"
 ]
 
+# =============================
+# HANDLE MISSING FEATURES
+# =============================
+for col in features:
+    if col not in df.columns:
+        print(f"⚠ Adding missing column: {col}")
+        df[col] = 0
+
+# =============================
+# ENCODE CATEGORICAL FEATURES
+# =============================
+label = LabelEncoder()
+
+categorical_cols = [
+    "sender_id",
+    "device_id",
+    "location",
+    "transaction_type"
+]
+
+for col in categorical_cols:
+    df[col] = label.fit_transform(df[col].astype(str))
+
+# =============================
+# SPLIT DATA
+# =============================
 X = df[features]
 y = df["fraud_flag"]
 
-# save feature order
+# Save feature order (IMPORTANT for FastAPI)
 joblib.dump(features, "model_features.pkl")
 
-
 # =============================
-# HANDLE CLASS IMBALANCE
+# HANDLE IMBALANCE
 # =============================
-
 smote = SMOTE(random_state=42)
+X_res, y_res = smote.fit_resample(X, y)
 
-X_resampled, y_resampled = smote.fit_resample(X, y)
-
-print("\nAfter SMOTE:", X_resampled.shape)
-
+print("\nAfter SMOTE:", X_res.shape)
 
 # =============================
-# TRAIN TEST SPLIT
+# TRAIN-TEST SPLIT
 # =============================
-
 X_train, X_test, y_train, y_test = train_test_split(
-    X_resampled,
-    y_resampled,
+    X_res, y_res,
     test_size=0.2,
     random_state=42,
-    stratify=y_resampled
+    stratify=y_res
 )
 
-
 # =============================
-# RANDOM FOREST MODEL
+# XGBOOST MODEL (TUNED)
 # =============================
-
-model = RandomForestClassifier(
-
+model = XGBClassifier(
     n_estimators=500,
-    max_depth=15,
-
-    min_samples_split=5,
-    min_samples_leaf=3,
-
-    class_weight="balanced",
-
+    max_depth=8,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    scale_pos_weight=1,
     random_state=42,
-    n_jobs=-1
-
+    n_jobs=-1,
+    eval_metric="logloss"
 )
 
-print("\nTraining Random Forest Model...")
-
+print("\nTraining XGBoost model...")
 model.fit(X_train, y_train)
 
-
 # =============================
-# PREDICTIONS
+# PREDICTIONS (IMPROVED)
 # =============================
+probs = model.predict_proba(X_test)[:, 1]
 
-y_pred = model.predict(X_test)
-
+# 🔥 LOWER THRESHOLD (better fraud detection)
+y_pred = (probs > 0.4).astype(int)
 
 # =============================
 # EVALUATION
 # =============================
-
 print("\nAccuracy:", accuracy_score(y_test, y_pred))
 
 print("\nClassification Report:\n")
@@ -141,22 +146,17 @@ print(classification_report(y_test, y_pred))
 print("\nConfusion Matrix:\n")
 print(confusion_matrix(y_test, y_pred))
 
-
 # =============================
 # CROSS VALIDATION
 # =============================
-
-scores = cross_val_score(model, X_resampled, y_resampled, cv=5)
+scores = cross_val_score(model, X_res, y_res, cv=5)
 
 print("\nCross Validation Scores:", scores)
-
 print("Average CV Accuracy:", scores.mean())
-
 
 # =============================
 # FEATURE IMPORTANCE
 # =============================
-
 importance = model.feature_importances_
 
 feature_importance = pd.DataFrame({
@@ -164,14 +164,12 @@ feature_importance = pd.DataFrame({
     "Importance": importance
 }).sort_values("Importance", ascending=False)
 
-print("\nFeature Importance:\n")
-print(feature_importance)
-
+print("\nTop Features:\n")
+print(feature_importance.head(10))
 
 # =============================
 # SAVE MODEL
 # =============================
+joblib.dump(model, "fraud_model_xgboost.pkl")
 
-joblib.dump(model, "fraud_model_randomforest.pkl")
-
-print("\nModel saved successfully as fraud_model_randomforest.pkl")
+print("\n✅ XGBoost Model saved successfully!")

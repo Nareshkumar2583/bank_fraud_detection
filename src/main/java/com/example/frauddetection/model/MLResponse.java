@@ -1,23 +1,21 @@
 package com.example.frauddetection.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class MLResponse {
 
-    private double fraud_probability;
+    // Adding JsonProperty ensures Jackson maps the Python "fraud_probability"
+    // key correctly to this Java field.
+    @JsonProperty("fraud_probability")
+    private double fraudProbability;
+
+    @JsonProperty("prediction")
     private String prediction;
 
-    public double getFraud_probability() {
-        return fraud_probability;
-    }
+    // Getters and Setters
+    public double getFraud_probability() { return fraudProbability; }
+    public void setFraud_probability(double fraud_probability) { this.fraudProbability = fraud_probability; }
 
-    public void setFraud_probability(double fraud_probability) {
-        this.fraud_probability = fraud_probability;
-    }
-
-    public String getPrediction() {
-        return prediction;
-    }
-
-    public void setPrediction(String prediction) {
-        this.prediction = prediction;
-    }
+    public String getPrediction() { return prediction; }
+    public void setPrediction(String prediction) { this.prediction = prediction; }
 }

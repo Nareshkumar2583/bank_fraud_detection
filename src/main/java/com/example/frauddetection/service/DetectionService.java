@@ -4,209 +4,164 @@ import com.example.frauddetection.model.MLRequest;
 import com.example.frauddetection.model.MLResponse;
 import com.example.frauddetection.model.Transaction;
 import com.example.frauddetection.repository.TransactionRepository;
-
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Service
 public class DetectionService {
 
     private final TransactionRepository repository;
-    private final AlertService alertService;
+    private final MLService mlInferenceService;
+    private final EmailService emailService;
 
-    public DetectionService(TransactionRepository repository,
-                            AlertService alertService) {
+    public DetectionService(TransactionRepository repository, MLService mlInferenceService, EmailService emailService) {
         this.repository = repository;
-        this.alertService = alertService;
+        this.mlInferenceService = mlInferenceService;
+        this.emailService = emailService;
     }
 
-    public int calculateRiskScore(Transaction transaction) {
+    // =========================
+    // MAIN PROCESSING
+    // =========================
+    public Transaction processTransaction(Transaction transaction) {
 
-        int score = 0;
-        StringBuilder reason = new StringBuilder();
+        // --- LAYER 1: RULE ENGINE ---
+        int ruleScore = calculateRuleScore(transaction);
+        transaction.setRuleScore(ruleScore);
 
-        // RULE 1: High value
-        if (transaction.getAmount() > 50000) {
-            score += 50;
-            reason.append("High value transaction; ");
-            System.out.println("RULE TRIGGERED: High value transaction");
-        }
-
-        // RULE 2: Suspicious merchant
-        if ("Unknown".equalsIgnoreCase(transaction.getMerchantName())) {
-            score += 30;
-            reason.append("Suspicious merchant; ");
-            System.out.println("RULE TRIGGERED: Suspicious merchant");
-        }
-
-        // RULE 3: Odd hours
         try {
+            // --- LAYER 2: ML ENGINE ---
+            MLRequest mlRequest = mapToMLRequest(transaction, ruleScore);
+            MLResponse mlResponse = mlInferenceService.getPrediction(mlRequest);
 
-            LocalDateTime time = LocalDateTime.parse(transaction.getTimestamp());
-            int hour = time.getHour();
+            double mlProb = mlResponse.getFraud_probability();
 
-            if (hour >= 0 && hour <= 5) {
-                score += 20;
-                reason.append("Odd hour transaction; ");
-                System.out.println("RULE TRIGGERED: Odd hour transaction");
+            transaction.setMlProbability(mlProb);
+            transaction.setMlPrediction(mlResponse.getPrediction());
+
+            // =========================
+            // LAYER 3: HYBRID SCORING
+            // =========================
+
+            double ruleProb = ruleScore / 100.0;
+
+            // 🔥 Weighted score
+            double finalScore = (0.6 * mlProb) + (0.4 * ruleProb);
+
+            // =========================
+            // FINAL DECISION
+            // =========================
+            boolean isFraud =
+                    (finalScore > 0.7) ||
+                            (mlProb > 0.85) ||
+                            (ruleScore >= 85) ||
+                            (mlProb > 0.5 && ruleScore > 50);
+
+            transaction.setFraudFlag(isFraud);
+
+            // =========================
+            // STATUS LABEL
+            // =========================
+            if (finalScore > 0.7) {
+                transaction.setStatus("FRAUD");
+            } else if (finalScore > 0.4) {
+                transaction.setStatus("SUSPICIOUS");
+            } else {
+                transaction.setStatus("NORMAL");
             }
+
+            // Optional: store hybrid score instead of raw ML
+            transaction.setMlProbability(finalScore);
 
         } catch (Exception e) {
-            System.out.println("Timestamp format issue");
+            System.err.println("❌ ML Engine Offline. Using Rules Only.");
+
+            transaction.setMlProbability(0.0);
+            transaction.setMlPrediction("SERVICE_UNAVAILABLE");
+
+            boolean isFraud = ruleScore >= 70;
+            transaction.setFraudFlag(isFraud);
+            transaction.setStatus("RULE_ONLY_CHECK");
         }
 
-        // Get user transaction history
-        List<Transaction> userTransactions =
-                repository.findBySenderId(transaction.getSenderId());
-
-        // RULE 4: Rapid transactions
-        if (userTransactions.size() >= 3) {
-            score += 20;
-            reason.append("Rapid multiple transactions; ");
-            System.out.println("RULE TRIGGERED: Rapid multiple transactions");
+        Transaction saved = repository.save(transaction);
+        
+        // =========================
+        // EMERGENCY ALERT ROUTING
+        // =========================
+        // Trigger Email Alert only for extreme Velocity/Whale transfers caught with high certainty
+        if (saved.isFraudFlag() && saved.getAmount() >= 10000 && (saved.getMlProbability() >= 0.85 || saved.getRuleScore() >= 85)) {
+            emailService.sendFraudAlertEmail(saved);
         }
 
-        // RULE 5: Location mismatch
-        if (!userTransactions.isEmpty()) {
-
-            String lastLocation =
-                    userTransactions.get(userTransactions.size() - 1).getLocation();
-
-            if (!lastLocation.equals(transaction.getLocation())) {
-                score += 25;
-                reason.append("Location mismatch; ");
-                System.out.println("RULE TRIGGERED: Location mismatch");
-            }
-        }
-
-        // RULE 6: New location
-        score += checkNewLocation(transaction, userTransactions, reason);
-
-        // Calculate txn_gap
-        long gap = 30;
-
-        if (!userTransactions.isEmpty()) {
-
-            Transaction lastTxn =
-                    userTransactions.get(userTransactions.size() - 1);
-
-            try {
-
-                LocalDateTime lastTime =
-                        LocalDateTime.parse(lastTxn.getTimestamp());
-
-                LocalDateTime currentTime =
-                        LocalDateTime.parse(transaction.getTimestamp());
-
-                gap = Duration.between(lastTime, currentTime).getSeconds();
-
-            } catch (Exception e) {
-                gap = 30;
-            }
-        }
-
-        transaction.setTxnGap(gap);
-
-        // set rule score for ML
-        transaction.setRuleScore(score);
-
-        // call ML model
-        double mlProbability = getMLProbability(transaction);
-
-        transaction.setMlProbability(mlProbability);
-
-        System.out.println("ML Probability: " + mlProbability);
-
-        // final fraud decision
-        boolean fraudDetected = (score >= 70 || mlProbability >= 0.40);
-
-        transaction.setFraudFlag(fraudDetected);
-
-        if (fraudDetected) {
-
-            alertService.createAlert(transaction, reason.toString());
-
-            System.out.println("ALERT CREATED for transaction: "
-                    + transaction.getTransactionId());
-        }
-
-        return score;
+        return saved;
     }
 
+    // =========================
+    // STRONG RULE ENGINE
+    // =========================
+    private int calculateRuleScore(Transaction tx) {
+        int score = 0;
 
-    private int checkNewLocation(Transaction transaction,
-                                 List<Transaction> userTransactions,
-                                 StringBuilder reason) {
+        // 🔥 Rule 1: Extreme Amount
+        if (tx.getAmount() > 100000) score += 80;
+        else if (tx.getAmount() > 50000) score += 50;
+        else if (tx.getAmount() > 20000) score += 25;
 
-        boolean knownLocation = userTransactions.stream()
-                .anyMatch(tx -> tx.getLocation()
-                        .equalsIgnoreCase(transaction.getLocation()));
+        // 🔥 Rule 2: Night Transactions
+        int hour = LocalDateTime.now().getHour();
+        if (hour >= 23 || hour <= 5) score += 25;
 
-        if (!knownLocation && !userTransactions.isEmpty()) {
-            reason.append("New location detected; ");
-            System.out.println("RULE TRIGGERED: New location detected");
-            return 20;
+        // 🔥 Rule 3: High Risk Merchant
+        if ("Unknown".equalsIgnoreCase(tx.getMerchantName()) ||
+                "Casino".equalsIgnoreCase(tx.getMerchantName())) {
+            score += 40;
         }
 
-        return 0;
+        // 🔥 Rule 4: Location Change
+        if (tx.getLocationChange() == 1) score += 30;
+
+        // 🔥 Rule 5: Device Change
+        if (tx.getDeviceChange() == 1) score += 25;
+
+        // 🔥 Rule 6: High Frequency
+        if (tx.getTxnFrequency() > 10) score += 40;
+        else if (tx.getTxnFrequency() > 5) score += 20;
+
+        // 🔥 Rule 7: Abnormal Amount vs Avg
+        if (tx.getAmountVsAvg() > 3) score += 35;
+        else if (tx.getAmountVsAvg() > 2) score += 20;
+
+        // 🔥 Rule 8: Short Time Gap
+        if (tx.getTxnGap() < 10) score += 25;
+
+        return Math.min(score, 100);
     }
 
+    // =========================
+    // ML REQUEST MAPPER
+    // =========================
+    private MLRequest mapToMLRequest(Transaction tx, int ruleScore) {
 
-    public double getMLProbability(Transaction transaction) {
+        MLRequest req = new MLRequest();
 
-        RestTemplate restTemplate = new RestTemplate();
+        req.setSender_id(tx.getSenderId());
+        req.setDevice_id(tx.getDeviceId());
+        req.setLocation(tx.getLocation());
+        req.setTransaction_type(tx.getTransactionType());
 
-        String url = "http://localhost:8000/predict";
+        req.setAmount(tx.getAmount());
+        req.setTxn_frequency(tx.getTxnFrequency());
+        req.setUser_avg_amount(tx.getUserAvgAmount());
+        req.setAmount_vs_avg(tx.getAmountVsAvg());
 
-        MLRequest request = new MLRequest();
+        req.setDevice_change(tx.getDeviceChange());
+        req.setLocation_change(tx.getLocationChange());
+        req.setTxn_gap(tx.getTxnGap());
 
-        request.sender_id =
-                Integer.parseInt(transaction.getSenderId().replace("USER",""));
+        req.setRule_score(ruleScore);
 
-        request.amount = transaction.getAmount();
-
-        request.device_id = 1;
-
-        request.location = 1;
-
-        request.transaction_type = 1;
-
-        request.hour =
-                LocalDateTime.parse(transaction.getTimestamp()).getHour();
-
-        request.txn_frequency = 5;
-
-        request.user_avg_amount = 5000;
-
-        request.amount_vs_avg =
-                transaction.getAmount() / 5000;
-
-        request.device_change = 0;
-
-        request.location_change = 0;
-
-        request.merchant_category = 1;
-
-        request.txn_gap = transaction.getTxnGap();
-
-        request.rule_score = transaction.getRuleScore();
-
-        try {
-
-            ResponseEntity<MLResponse> response =
-                    restTemplate.postForEntity(url, request, MLResponse.class);
-
-            return response.getBody().getFraud_probability();
-
-        } catch(Exception e) {
-
-            System.out.println("ML API error: " + e.getMessage());
-            return 0.0;
-        }
+        return req;
     }
 }
