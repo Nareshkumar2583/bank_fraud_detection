@@ -249,12 +249,14 @@ This system demonstrates a **real-world fraud detection pipeline** used in banki
 ✔ Real-time monitoring
 
 ---
-** licence**
+
+## licence
 MIT INCLUDED
 
-## 👨‍💻 Author
+## 👨‍💻 TEAM MEMEBER
 
 **Naresh Kumar S**
-Full Stack Developer | ML Enthusiast
+**Ishita-Agrawal**
+**Anusrisamala**
 
 ---
