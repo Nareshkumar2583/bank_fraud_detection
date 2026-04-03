@@ -249,6 +249,8 @@ This system demonstrates a **real-world fraud detection pipeline** used in banki
 ✔ Real-time monitoring
 
 ---
+** licence**
+MIT INCLUDED
 
 ## 👨‍💻 Author
 
@@ -256,7 +258,3 @@ This system demonstrates a **real-world fraud detection pipeline** used in banki
 Full Stack Developer | ML Enthusiast
 
 ---
-
-## ⭐ If you like this project
-
-Give it a ⭐ on GitHub!
