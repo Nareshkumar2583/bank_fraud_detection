@@ -255,8 +255,8 @@ MIT INCLUDED
 
 ## 👨‍💻 TEAM MEMEBER
 
-**Naresh Kumar S**
-**Ishita-Agrawal**
+**Naresh Kumar S**|
+|**Ishita-Agrawal**|
 **Anusrisamala**
 
 ---
